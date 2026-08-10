@@ -9,8 +9,76 @@ from ..app import db
 
 def test_project_permissions(client):
     project_handler = ProjectHandler()
-    project_permission = project_handler.get_push_permission(None)
-    assert project_permission == ProjectPermissions.Upload
+    versioned_diff = {"path": "survey.gpkg", "diff": {"path": "diff"}}
+    editor_changes = {
+        "added": [],
+        "removed": [],
+        "updated": [versioned_diff],
+    }
+
+    assert (project_handler.get_push_permission(editor_changes) == ProjectPermissions.Edit)
+
+    assert (
+        project_handler.get_push_permission(
+            {
+                "added": [],
+                "removed": [],
+                "updated": [{"path": "survey.SQLITE",
+                             "diff": {"path": "diff"}}],
+            }
+        ) == ProjectPermissions.Edit
+    )
+
+    upload_changes = [
+        None,
+
+        {},
+
+        {"added": [], "removed": [], "updated": []},
+
+        {
+            "added": [{"path": "new.gpkg"}],
+            "removed": [],
+            "updated": [versioned_diff],
+        },
+
+        {
+            "added": [],
+            "removed": [{"path": "survey.gpkg"}],
+            "updated": [versioned_diff],
+        },
+
+        {
+            "added": [],
+            "removed": [],
+            "updated": [{"path": "survey.gpkg"}],
+        },
+
+        {
+            "added": [],
+            "removed": [],
+            "updated": [{"path": "project.qgz", "diff": {"path": "diff"}}],
+        },
+
+        {
+            "added": [],
+            "removed": [],
+            "updated": [versioned_diff, {"path": "notes.txt", "diff": {"path": "diff"}},],
+        },
+
+        {"added": {}, "removed": [], "updated": [versioned_diff]},
+
+        {
+            "added": [],
+            "removed": [],
+            "updated": [{"path": "survey.gpkg", "diff": {}}],
+        },
+
+        {"removed": [], "updated": [versioned_diff]},
+    ]
+
+    for changes in upload_changes:
+        assert (project_handler.get_push_permission(changes) == ProjectPermissions.Upload)
 
 
 def test_email_receivers(client):

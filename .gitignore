@@ -35,3 +35,7 @@ docker-compose.local.yml
 # SSO
 *.pem
 *.crt
+
+# venv
+.dev_venv/
+dev_venv/

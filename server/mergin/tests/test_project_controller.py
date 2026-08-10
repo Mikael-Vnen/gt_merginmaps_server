@@ -1013,6 +1013,16 @@ def _get_changes_with_diff(project_dir):
     return changes
 
 
+def _get_editor_changes_with_diff(project_dir):
+    return {
+        "added": [],
+        "removed": [],
+        "updated": [
+            create_diff_meta("base.gpkg", "inserted_1_A.gpkg", project_dir)
+        ],
+    }
+
+
 def _get_changes_with_diff_0_size(project_dir):
     changes = _get_changes_with_diff(project_dir)
     # tweak file size
@@ -1084,6 +1094,90 @@ def test_push_project_start(client, data, expected):
         if failure:
             assert failure.last_version == "v1"
             assert failure.error_type == "push_start"
+
+
+def test_editor_push_permissions(client):
+    project = Project.query.filter_by(
+        name=test_project, workspace_id=test_workspace_id
+    ).first()
+    editor = add_user("editor", "editor")
+    project.set_role(editor.id, ProjectRole.EDITOR)
+    db.session.commit()
+    login(client, editor.username, "editor")
+
+    editor_changes = _get_editor_changes_with_diff(test_project_dir)
+    disallowed_changes = [
+        (
+            "added file",
+            {
+                "added": [
+                    file_info(
+                        test_project_dir,
+                        "test_dir/test4.txt",
+                        chunk_size=CHUNK_SIZE,
+                    )
+                ],
+                "removed": [],
+                "updated": [],
+            },
+        ),
+        (
+            "removed file",
+            {
+                "added": [],
+                "removed": [
+                    file_info(test_project_dir, "test3.txt", chunk_size=CHUNK_SIZE)
+                ],
+                "updated": [],
+            },
+        ),
+        (
+            "full versioned file update",
+            {
+                "added": [],
+                "removed": [],
+                "updated": [
+                    file_info(test_project_dir, "base.gpkg", chunk_size=CHUNK_SIZE)
+                ],
+            },
+        ),
+        (
+            "mixed update",
+            {
+                "added": [],
+                "removed": [],
+                "updated": editor_changes["updated"]
+                + [file_info(test_project_dir, "test.txt", chunk_size=CHUNK_SIZE)],
+            },
+        ),
+    ]
+    url = f"/v1/project/push/{test_workspace_name}/{test_project}"
+
+    for case, changes in disallowed_changes:
+        response = client.post(
+            url,
+            data=json.dumps(
+                {"version": "v1", "changes": changes}, cls=DateTimeEncoder
+            ).encode("utf-8"),
+            headers=json_headers,
+        )
+        assert response.status_code == 403, case
+
+    response = client.post(
+        url,
+        data=json.dumps(
+            {"version": "v1", "changes": editor_changes}, cls=DateTimeEncoder
+        ).encode("utf-8"),
+        headers=json_headers,
+    )
+    assert response.status_code == 200
+
+    upload = Upload.query.filter_by(id=response.json["transaction"]).first()
+    upload_dir = os.path.join(project.storage.project_dir, "tmp", upload.id)
+    upload_chunks(upload_dir, upload.changes)
+    response = client.post(f"/v1/project/push/finish/{upload.id}")
+    assert response.status_code == 200
+    assert project.latest_version == 2
 
 
 def test_push_to_new_project(client):

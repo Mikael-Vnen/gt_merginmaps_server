@@ -1,0 +1,202 @@
+MERGIN MAPS SERVER - LOCAL DOCKER DEVELOPMENT HANDOFF
+
+Purpose
+---
+
+This repository is a private working copy of Mergin Maps Server. The immediate
+task for the local Codex instance is to build an isolated Docker-based
+development/test environment and validate the editor-role feature already
+implemented on this branch.
+
+Repository and branch
+---
+
+Private GitHub repository:
+  git@github.com:Mikael-Vnen/gt_merginmaps_server.git
+
+Feature branch:
+  feature/editor-role
+
+The feature branch starts from upstream commit:
+  8e650d6ba51695ba3071b0a7ed34e864e1773aa8
+
+That commit is the source revision used by the currently running Azure images.
+The containers are tagged 2025.7.3, although this source reports 2025.6.2
+internally. Keep the branch on this older baseline unless the user explicitly
+decides to rebase or upgrade it.
+
+Current goal and semantics
+---
+
+Enable the existing Editor project role in the community server and web app.
+
+Editors may:
+
+- push GeoDiff changes to existing versioned .gpkg or .sqlite files;
+- use ordinary feature editing, including inserts, updates, and deletes encoded
+  by GeoDiff.
+
+Editors may not:
+
+- add or remove project files;
+- upload or replace whole GeoPackage/SQLite files;
+- upload ordinary files such as .qgz, images, or attachments;
+- perform mixed pushes containing both eligible GeoDiff updates and any
+  ineligible file update.
+
+This is not insert-only or layer-level access control. Inspecting individual
+GeoDiff operations and implementing layer ACLs are explicitly out of scope.
+
+Implemented changes
+---
+
+1. server/mergin/sync/project_handler.py
+
+ProjectHandler.get_push_permission() now returns ProjectPermissions.Edit only
+when added and removed are both empty lists and every item in a non-empty
+updated list is a versioned .gpkg/.sqlite path with a non-empty diff dictionary.
+Every malformed, empty, full-file, ordinary-file, added-file, or removed-file
+case requires ProjectPermissions.Upload. Do not broaden Upload to Editor;
+ProjectPermissions.Upload must continue to require Writer or higher.
+
+The all(...) call uses a generator expression, which is an iterable. It checks
+each updated item and short-circuits on the first ineligible item.
+
+2. server/mergin/tests/test_project_handler.py
+
+The unit-test matrix covers eligible .gpkg and case-insensitive .SQLITE GeoDiff
+updates plus empty, malformed, added, removed, full-file, non-versioned, mixed,
+and empty-diff cases.
+
+3. server/mergin/tests/test_project_controller.py
+
+A legacy/v1 integration test creates an Editor, verifies 403 responses for
+addition, removal, full versioned-file replacement, and mixed updates, and then
+completes an eligible GeoDiff push and verifies that the project advances to
+version 2.
+
+This old source baseline has only the legacy/v1 push implementation needed by
+the test. Its short public_api_v2_controller.py does not contain the newer v2
+version/chunk push endpoints described in the older EDITOR_ROLE_HANDOFF.txt.
+Do not invent or port v2 push tests unless the source baseline is upgraded.
+
+4. web-app/packages/app/src/App.vue
+
+The community startup call that filtered out the existing editor role and edit
+permission was removed. The shared frontend library already defines the role,
+labels, permission mappings, and dropdown support; no duplicate UI option is
+needed.
+
+5. .gitignore
+
+.dev_venv/ and dev_venv/ are ignored so local virtual environments are not
+committed. "Ignored" only affects Git tracking; it does not hide, delete, or
+secure those directories from local users.
+
+Dependency problem found on the Azure VM
+---
+
+Do not use /home/azureuser/apps/server/dev_venv for this branch's tests. It has
+Python 3.12.3, Flask 3.1.2, Flask-SQLAlchemy 3.1.1, and SQLAlchemy 2.0.44.
+Importing the application fails with:
+
+  ImportError: cannot import name 'Model' from 'flask_sqlalchemy'
+
+The branch's server/Pipfile requires Python 3.10 and locks the relevant older
+stack, including Flask 2.2.5, Flask-SQLAlchemy 2.5.1, SQLAlchemy 1.4.53, and
+pygeodiff 1.0.6. This is an environment mismatch, not a reason to modify the
+application import. Use the repository Dockerfile/locked dependencies in the
+local development image.
+
+Local Docker development requirements
+---
+
+Create a separate local development/test Compose setup or override. It should:
+
+- build backend and frontend images from this feature branch;
+- use the branch's Python 3.10 and locked Pipfile dependencies;
+- use a dedicated local PostgreSQL container and named test volume;
+- use a unique Compose project name so it cannot collide with any other stack;
+- expose only ports needed for local development;
+- keep secrets in an untracked local .env file with development-only values;
+- support running pytest inside the compatible backend container;
+- avoid pointing tests at the Azure/live database or storage.
+
+The test fixtures call db.drop_all(), so never run this test suite against the
+live/manual database. Confirm the database host/name and Compose project before
+running pytest. Do not reuse or copy the Azure production data volume into the
+test stack.
+
+Start by inspecting the branch's Dockerfiles, Pipfile/Pipfile.lock, existing
+deployment/community Compose files, test fixtures, and environment-variable
+requirements. Prefer a small local-only Compose override or dedicated dev
+Compose file over modifying the live deployment definition.
+
+Suggested validation
+---
+
+Run these from the server directory inside the compatible backend test
+container:
+
+  pytest -v mergin/tests/test_project_handler.py::test_project_permissions
+  pytest -v mergin/tests/test_project_controller.py::test_editor_push_permissions
+  pytest -v mergin/tests/test_project_handler.py \
+    mergin/tests/test_project_controller.py::test_editor_push_permissions \
+    mergin/tests/test_permissions.py
+
+Then run the broader backend test suite if the focused tests pass.
+
+For the frontend, use the Node version expected by its Docker build (currently
+Node 22 in the repository setup) and run the repository's relevant checks,
+including:
+
+  yarn lint:no-legacy
+  yarn build:all
+
+The Azure host did not have Node/Yarn, so these checks have not been run there.
+
+Current verification status
+---
+
+- Python syntax compilation passed before the user's latest formatting edits;
+  rerun it after checkout.
+- Backend pytest has not passed on the Azure host because its virtualenv is
+  incompatible with this branch, as described above.
+- Frontend lint/build has not been run on the Azure host.
+- No database migration is required; the Editor enum, permission mapping, API
+  role parsing, and frontend role definitions already exist.
+- No live containers, database, storage, or deployment configuration were
+  changed by this feature work.
+
+Local files intentionally excluded from this feature commit
+---
+
+The Azure checkout contains local/untracked files that must not be committed
+without a separate review, especially deployment/community/.env because it may
+contain secrets. Other excluded files observed there include the original
+EDITOR_ROLE_HANDOFF.txt, a root Pipfile, deployment/community/docker-compose.vm.yml,
+and server/requirements.txt. Unrelated formatting edits may also remain in
+server/mergin/tests/test_project_controller.py outside the editor test hunks.
+
+Deployment later
+---
+
+The Azure Compose stack uses published official images and does not bind-mount
+this source tree. After local tests pass, deployment will require building and
+tagging custom backend and frontend images, updating the Azure Compose image
+references, and deliberately recreating the affected services. That later
+deployment work is separate from this handoff and must not be performed merely
+to run local tests.
+
+Recommended first actions for local Codex
+---
+
+1. Fetch origin and check out feature/editor-role.
+2. Read this file and inspect git status/diff before making changes.
+3. Verify the current Docker and Compose files on this exact old baseline.
+4. Design the isolated local test stack and explain the proposed files/commands
+   before making any destructive or deployment-related action.
+5. Build the local images, start only the isolated test services, run the focused
+   tests above, and report any failures with their root cause.
+6. Smoke-test that Editor appears in the Share Project UI and that an Editor can
+   sync GeoDiff feature edits but cannot change project files.
